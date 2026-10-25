@@ -258,5 +258,3 @@ Triggers: push to `main`, pull requests, manual run.
 2. **VAPID keys** for closed-app push (§6). In-app alarms work without them.
 3. **Rotate** the database password and storage key that were shared in chat (§8).
 4. Real-device push delivery has not been tested yet. It needs the HTTPS deployment.
-#   M y - f i t  
- 
