@@ -51,8 +51,14 @@ jobs:
         run: npm ci
       - name: Validate Prisma schema
         run: npx prisma validate
+      - name: Create Prisma shadow database
+        env:
+          PGPASSWORD: test
+        run: createdb --host=localhost --username=postgres --maintenance-db=postgres myfit_shadow
       - name: Check migrations match schema
-        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$DATABASE_URL" --exit-code
+        run: |
+          SHADOW_DATABASE_URL="${DATABASE_URL/myfit_test/myfit_shadow}"
+          npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
       - name: Lint
         run: npm run lint
       - name: Typecheck
