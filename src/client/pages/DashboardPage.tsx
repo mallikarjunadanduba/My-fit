@@ -10,8 +10,7 @@ import { ErrorState } from '../components/common/States';
 import { visuallyHiddenSx } from '../components/common/mobile';
 import { useAuth } from '../features/auth/AuthContext';
 import { AddFoodDialog } from '../features/diary/AddFoodDialog';
-import { ActivityCard, AlarmCard, HeroCard, MacrosCard, MealsCard, RoutineCard, WaterCard, WorkoutCard } from '../features/dashboard/DashboardCards';
-import { WeeklyCharts } from '../features/dashboard/WeeklyCharts';
+import { HeroCard, MealsList, UpNextCard, WaterTile, WeekStrip, WorkoutTile } from '../features/dashboard/HomeCards';
 import type { Dashboard } from '../features/reports/types';
 import { useAsync } from '../hooks/useAsync';
 import { api } from '../services/api';
@@ -90,7 +89,7 @@ function DateButton({ date, today, onChange }: { date: string; today: string; on
 function DashboardSkeleton() {
   return (
     <Stack spacing={2} aria-busy="true" aria-label="Loading dashboard">
-      {[150, 110, 120, 130, 110].map((h, i) => (
+      {[300, 130, 80, 300].map((h, i) => (
         <Card key={i}>
           <CardContent>
             <Skeleton width="35%" height={24} />
@@ -175,33 +174,23 @@ export default function DashboardPage() {
               </CardContent>
             </Card>
           )}
-          <Grid container spacing={{ xs: 1.5, md: 2 }}>
-            <Grid size={{ xs: 12, md: 6, lg: 4 }}>
-              <HeroCard d={data} onQuickAdd={data.greeting.isFuture ? undefined : () => setAddOpen(true)} />
+          {/* Phone: one simple column. Wider screens: today on the left, meals + week on the right. */}
+          <Grid container spacing={2} sx={{ maxWidth: 1100 }}>
+            <Grid size={{ xs: 12, md: 6 }}>
+              <Stack spacing={1.75}>
+                <HeroCard d={data} onLogFood={data.greeting.isFuture ? undefined : () => setAddOpen(true)} />
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.5 }}>
+                  <WaterTile d={data} onChanged={refresh} />
+                  <WorkoutTile d={data} />
+                </Box>
+                {data.greeting.isToday && <UpNextCard d={data} onExpired={refresh} />}
+              </Stack>
             </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 4 }}>
-              <MacrosCard d={data} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 4 }}>
-              <WaterCard d={data} onChanged={refresh} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 8 }}>
-              <MealsCard d={data} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 4 }}>
-              <WorkoutCard d={data} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 4 }}>
-              <AlarmCard d={data} onExpired={refresh} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 4 }}>
-              <RoutineCard d={data} />
-            </Grid>
-            <Grid size={{ xs: 12, md: 6, lg: 8 }}>
-              <WeeklyCharts days={data.weekly.days} />
-            </Grid>
-            <Grid size={{ xs: 12, lg: 4 }}>
-              <ActivityCard d={data} />
+            <Grid size={{ xs: 12, md: 6 }}>
+              <Stack spacing={2.25}>
+                <MealsList d={data} />
+                <WeekStrip d={data} />
+              </Stack>
             </Grid>
           </Grid>
         </>
