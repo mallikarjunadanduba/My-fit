@@ -1,0 +1,200 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      allow_destructive_migrations:
+        description: 'Allow migrations containing DROP/TRUNCATE/ALTER … DROP (only after taking a backup)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    name: Lint · Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: myfit_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # CI uses a throwaway Postgres service — never production.
+      DATABASE_URL: postgresql://postgres:test@localhost:5432/myfit_test
+      DIRECT_URL: postgresql://postgres:test@localhost:5432/myfit_test
+      TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/myfit_test
+      SESSION_SECRET: ci-only-secret-ci-only-secret-ci-only-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate Prisma schema
+        run: npx prisma validate
+      - name: Check migrations match schema
+        run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$DATABASE_URL" --exit-code
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Backend tests
+        run: npm run test:server
+      - name: Frontend tests
+        run: npm run test:client
+      - name: Build
+        run: npm run build
+      - name: Smoke-test production bundle
+        env:
+          NODE_ENV: production
+          PORT: '3999'
+          SCHEDULER_ENABLED: 'false'
+        run: |
+          node dist/server/index.js &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3999/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3999/api/health
+          curl -fsS http://127.0.0.1:3999/ | grep -q '<div id="root">'
+          kill %1
+
+  image:
+    name: Build & push container
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        run: echo "image=${IMAGE_NAME,,}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  migrate:
+    name: Apply database migrations
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Check database secrets
+        id: check
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ -z "$DIRECT_URL" ]; then
+            echo "::warning::DATABASE_URL / DIRECT_URL secrets are not set in the 'production' environment — skipping migrations."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install dependencies
+        if: steps.check.outputs.configured == 'true'
+        run: npm ci
+      - name: Block destructive migrations
+        if: steps.check.outputs.configured == 'true' && inputs.allow_destructive_migrations != true
+        run: node scripts/check-destructive-migrations.mjs
+      - name: prisma migrate deploy
+        if: steps.check.outputs.configured == 'true'
+        run: npx prisma migrate deploy
+
+  deploy:
+    name: Deploy
+    needs: [image, migrate]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+    env:
+      DEPLOY_HOOK_URL: ${{ secrets.DEPLOY_HOOK_URL }}
+      APP_URL: ${{ vars.APP_URL }}
+      IMAGE: ${{ needs.image.outputs.image }}
+    steps:
+      - name: Trigger deployment
+        id: trigger
+        run: |
+          if [ -z "$DEPLOY_HOOK_URL" ]; then
+            {
+              echo "### ⚠️ Deployment not performed"
+              echo "No \`DEPLOY_HOOK_URL\` secret is configured for the \`production\` environment."
+              echo "The image **$IMAGE** was built and pushed, and migrations ran (if DB secrets exist),"
+              echo "but no hosting target was triggered. See README → Deployment."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::No deployment target configured (DEPLOY_HOOK_URL secret missing)."
+            echo "triggered=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Deploy hook (Render / Railway / Koyeb style). The URL is a secret and is never printed.
+          status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$DEPLOY_HOOK_URL?imgURL=$(printf %s "$IMAGE" | jq -sRr @uri)")
+          echo "Deploy hook responded with HTTP $status"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "::error::Deploy hook failed (HTTP $status)"
+            exit 1
+          fi
+          echo "triggered=true" >> "$GITHUB_OUTPUT"
+      - name: Verify health
+        if: steps.trigger.outputs.triggered == 'true'
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "::warning::APP_URL variable not set — cannot verify the deployment. Marking as unverified."
+            echo "### ⚠️ Deployment triggered but NOT verified (set the APP_URL environment variable)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Wait until the new revision reports healthy (up to ~10 minutes).
+          for i in $(seq 1 60); do
+            body=$(curl -fsS --max-time 10 "$APP_URL/api/health" || true)
+            if echo "$body" | grep -q '"status":"ok"'; then
+              echo "### ✅ Deployed and healthy: $APP_URL" >> "$GITHUB_STEP_SUMMARY"
+              echo "Image: \`$IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$APP_URL/api/health did not report healthy within 10 minutes"
+          echo "### ❌ Deployment triggered but health check failed" >> "$GITHUB_STEP_SUMMARY"
+          exit 1

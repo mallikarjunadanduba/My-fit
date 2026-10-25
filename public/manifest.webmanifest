@@ -1,0 +1,23 @@
+{
+  "name": "MyFit Routine",
+  "short_name": "MyFit",
+  "description": "Your personal diet, workout and routine companion",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F5F7FA",
+  "theme_color": "#152238",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Food diary", "url": "/diary", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Log water", "url": "/water", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Workout", "url": "/workouts", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

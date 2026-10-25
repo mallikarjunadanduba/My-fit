@@ -1,0 +1,809 @@
+// MyFit Routine — PostgreSQL schema
+// Conventions:
+//  - "local date" columns use @db.Date and hold the calendar day in the user's timezone.
+//  - "HH:mm" string columns hold a wall-clock time in the user's timezone.
+//  - Instants use timestamptz.
+//  - Historical rows (diary entries, workout sessions, routine entries) snapshot the
+//    values they were created from, so editing reusable records never rewrites history.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum UserRole {
+  OWNER
+  MEMBER
+}
+
+enum ThemeMode {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
+enum DayType {
+  ANY
+  GYM
+  REST
+}
+
+enum FoodUnit {
+  G
+  ML
+  PIECE
+  SCOOP
+  SERVING
+}
+
+enum FoodSource {
+  SEED
+  CUSTOM
+  LABEL
+}
+
+enum MealStatus {
+  PENDING
+  COMPLETED
+  PARTIAL
+  SKIPPED
+}
+
+enum ExerciseType {
+  STRENGTH
+  CARDIO
+  MOBILITY
+  OTHER
+}
+
+enum WorkoutSessionStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+}
+
+enum ItemStatus {
+  PENDING
+  COMPLETED
+  SKIPPED
+}
+
+enum ActivityCategory {
+  WAKE_UP
+  MORNING_WATER
+  BREAKFAST
+  MID_MORNING
+  LUNCH
+  PRE_WORKOUT
+  GYM
+  POST_WORKOUT
+  WATER
+  DINNER
+  BEFORE_BED
+  BEDTIME
+  CUSTOM
+}
+
+enum RoutineStatus {
+  PENDING
+  COMPLETED
+  SKIPPED
+  MISSED
+  SNOOZED
+}
+
+enum OccurrenceStatus {
+  PENDING
+  SENT
+  COMPLETED
+  DISMISSED
+  SNOOZED
+  MISSED
+}
+
+enum DeliveryChannel {
+  WEB_PUSH
+  IN_APP
+  TEST
+}
+
+enum DeliveryStatus {
+  SENT
+  FAILED
+  EXPIRED
+  SKIPPED
+}
+
+enum MediaKind {
+  PROGRESS_PHOTO
+  WORKOUT_REFERENCE
+  FOOD_REFERENCE
+  PROFILE
+  OTHER
+}
+
+enum MediaStatus {
+  PENDING
+  READY
+  DELETED
+}
+
+// ───────────────────────────── Identity ─────────────────────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         UserRole @default(MEMBER)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  settings           UserSettings?
+  sessions           Session[]
+  invitationsSent    Invitation[]
+  nutritionTargets   NutritionTarget[]
+  foodCategories     FoodCategory[]
+  foodItems          FoodItem[]
+  mealSlots          MealSlot[]
+  mealTemplates      MealTemplate[]
+  diaryEntries       FoodDiaryEntry[]
+  mealStatuses       DailyMealStatus[]
+  waterEntries       WaterEntry[]
+  dailyLogs          DailyLog[]
+  exercises          Exercise[]
+  workoutPlans       WorkoutPlan[]
+  workoutSessions    WorkoutSession[]
+  bodyMeasurements   BodyMeasurement[]
+  routineTemplates   RoutineTemplate[]
+  routineEntries     DailyRoutineEntry[]
+  reminders          Reminder[]
+  reminderOccurrence ReminderOccurrence[]
+  pushSubscriptions  PushSubscription[]
+  deliveryLogs       NotificationDeliveryLog[]
+  mediaAssets        MediaAsset[]
+}
+
+model Session {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @db.Uuid
+  tokenHash  String   @unique
+  expiresAt  DateTime @db.Timestamptz(3)
+  lastSeenAt DateTime @default(now()) @db.Timestamptz(3)
+  userAgent  String?
+  ip         String?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Invitation {
+  id          String    @id @default(uuid()) @db.Uuid
+  email       String
+  tokenHash   String    @unique
+  invitedById String    @db.Uuid
+  expiresAt   DateTime  @db.Timestamptz(3)
+  usedAt      DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+
+  invitedBy User @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([email])
+}
+
+model UserSettings {
+  id                   String    @id @default(uuid()) @db.Uuid
+  userId               String    @unique @db.Uuid
+  timezone             String    @default("Asia/Kolkata")
+  theme                ThemeMode @default(SYSTEM)
+  // Weekdays (0 = Sunday … 6 = Saturday) that are gym days; others are rest days.
+  gymWeekdays          Int[]     @default([1, 2, 3, 4, 5, 6])
+  defaultSnoozeMinutes Int       @default(10)
+  notificationsEnabled Boolean   @default(true)
+  profileMediaId       String?   @db.Uuid
+  defaultsSeededAt     DateTime? @db.Timestamptz(3)
+  createdAt            DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime  @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Targets are versioned by effective date so historical reports use the target in force that day.
+model NutritionTarget {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @db.Uuid
+  effectiveFrom DateTime @db.Date
+  calories      Float
+  caloriesMin   Float?
+  caloriesMax   Float?
+  protein       Float
+  proteinMin    Float?
+  proteinMax    Float?
+  carbs         Float
+  carbsMin      Float?
+  carbsMax      Float?
+  fat           Float
+  fatMin        Float?
+  fatMax        Float?
+  fiber         Float
+  fiberMin      Float?
+  fiberMax      Float?
+  waterMl       Int
+  waterMinMl    Int?
+  waterMaxMl    Int?
+  notes         String?
+  createdAt     DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, effectiveFrom])
+}
+
+// Per-day header: timezone the day was recorded in, day type override, notes.
+model DailyLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  date      DateTime @db.Date
+  timezone  String
+  dayType   DayType? // null = derived from UserSettings.gymWeekdays
+  notes     String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+// ───────────────────────────── Food ─────────────────────────────
+
+model FoodCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  name      String
+  slug      String
+  isSystem  Boolean  @default(false)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  foods FoodItemCategory[]
+
+  @@unique([userId, slug])
+}
+
+// Nutrition values are per one serving (servingSize × servingUnit).
+model FoodItem {
+  id           String     @id @default(uuid()) @db.Uuid
+  userId       String     @db.Uuid
+  name         String
+  brand        String?
+  preparation  String?
+  notes        String?
+  servingSize  Float
+  servingUnit  FoodUnit
+  servingLabel String? // e.g. "1 large egg"
+  calories     Float
+  protein      Float
+  carbs        Float
+  fat          Float
+  fiber        Float      @default(0)
+  isEstimate   Boolean    @default(true)
+  source       FoodSource @default(CUSTOM)
+  isFavorite   Boolean    @default(false)
+  imageMediaId String?    @db.Uuid
+  archivedAt   DateTime?  @db.Timestamptz(3)
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categories    FoodItemCategory[]
+  templateItems MealTemplateItem[]
+  diaryEntries  FoodDiaryEntry[]
+  imageMedia    MediaAsset?        @relation("FoodImage", fields: [imageMediaId], references: [id], onDelete: SetNull)
+
+  @@index([userId, name])
+  @@index([userId, archivedAt])
+}
+
+model FoodItemCategory {
+  foodId     String @db.Uuid
+  categoryId String @db.Uuid
+
+  food     FoodItem     @relation(fields: [foodId], references: [id], onDelete: Cascade)
+  category FoodCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([foodId, categoryId])
+  @@index([categoryId])
+}
+
+// The user's meal slots (Breakfast, Mid-morning, …). Editable and reorderable.
+model MealSlot {
+  id          String           @id @default(uuid()) @db.Uuid
+  userId      String           @db.Uuid
+  key         ActivityCategory @default(CUSTOM)
+  name        String
+  defaultTime String? // "HH:mm"
+  sortOrder   Int              @default(0)
+  archivedAt  DateTime?        @db.Timestamptz(3)
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime         @updatedAt @db.Timestamptz(3)
+
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  templates    MealTemplate[]
+  diaryEntries FoodDiaryEntry[]
+  statuses     DailyMealStatus[]
+
+  @@index([userId, sortOrder])
+}
+
+// A reusable meal. isPlan marks the template used as the planned meal for its slot + dayType.
+model MealTemplate {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  slotId      String?   @db.Uuid
+  name        String
+  dayType     DayType   @default(ANY)
+  isPlan      Boolean   @default(false)
+  notes       String?
+  preparation String?
+  archivedAt  DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slot     MealSlot?          @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  items    MealTemplateItem[]
+  statuses DailyMealStatus[]
+
+  @@index([userId, slotId, dayType])
+}
+
+model MealTemplateItem {
+  id              String   @id @default(uuid()) @db.Uuid
+  templateId      String   @db.Uuid
+  foodId          String?  @db.Uuid
+  customName      String? // free-text item, e.g. "Vegetables" when no food is linked
+  quantity        Float
+  quantityMax     Float? // upper bound for ranges such as 150–180 g
+  unit            FoodUnit
+  isOptional      Boolean  @default(false)
+  // Alternatives point at the primary item they can replace.
+  alternativeOfId String?  @db.Uuid
+  sortOrder       Int      @default(0)
+  notes           String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(3)
+
+  template      MealTemplate       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  food          FoodItem?          @relation(fields: [foodId], references: [id], onDelete: SetNull)
+  alternativeOf MealTemplateItem?  @relation("ItemAlternatives", fields: [alternativeOfId], references: [id], onDelete: Cascade)
+  alternatives  MealTemplateItem[] @relation("ItemAlternatives")
+  diaryEntries  FoodDiaryEntry[]
+
+  @@index([templateId])
+}
+
+// One consumed food. Nutrition is snapshotted: basis* = food's per-serving values at log time,
+// calories/protein/... = computed totals for the quantity eaten.
+model FoodDiaryEntry {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @db.Uuid
+  date             DateTime  @db.Date
+  slotId           String?   @db.Uuid
+  foodId           String?   @db.Uuid
+  templateItemId   String?   @db.Uuid
+  foodName         String
+  brand            String?
+  quantity         Float
+  unit             FoodUnit
+  basisServingSize Float
+  basisServingUnit FoodUnit
+  basisCalories    Float
+  basisProtein     Float
+  basisCarbs       Float
+  basisFat         Float
+  basisFiber       Float
+  calories         Float
+  protein          Float
+  carbs            Float
+  fat              Float
+  fiber            Float
+  isEstimate       Boolean   @default(true)
+  consumedAt       DateTime? @db.Timestamptz(3)
+  notes            String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slot         MealSlot?         @relation(fields: [slotId], references: [id], onDelete: SetNull)
+  food         FoodItem?         @relation(fields: [foodId], references: [id], onDelete: SetNull)
+  templateItem MealTemplateItem? @relation(fields: [templateItemId], references: [id], onDelete: SetNull)
+
+  @@index([userId, date])
+  @@index([userId, slotId, date])
+}
+
+model DailyMealStatus {
+  id          String     @id @default(uuid()) @db.Uuid
+  userId      String     @db.Uuid
+  date        DateTime   @db.Date
+  slotId      String     @db.Uuid
+  templateId  String?    @db.Uuid
+  status      MealStatus @default(PENDING)
+  completedAt DateTime?  @db.Timestamptz(3)
+  notes       String?
+  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @db.Timestamptz(3)
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slot     MealSlot      @relation(fields: [slotId], references: [id], onDelete: Cascade)
+  template MealTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, date, slotId])
+  @@index([userId, date])
+}
+
+model WaterEntry {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  date      DateTime @db.Date
+  amountMl  Int
+  loggedAt  DateTime @default(now()) @db.Timestamptz(3)
+  note      String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+// ───────────────────────────── Workouts ─────────────────────────────
+
+model Exercise {
+  id           String       @id @default(uuid()) @db.Uuid
+  userId       String       @db.Uuid
+  name         String
+  type         ExerciseType @default(STRENGTH)
+  muscleGroup  String?
+  equipment    String?
+  notes        String?
+  imageMediaId String?      @db.Uuid
+  archivedAt   DateTime?    @db.Timestamptz(3)
+  createdAt    DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime     @updatedAt @db.Timestamptz(3)
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dayItems   WorkoutDayExercise[]
+  entries    WorkoutExerciseEntry[]
+  imageMedia MediaAsset?            @relation("ExerciseImage", fields: [imageMediaId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, name])
+}
+
+model WorkoutPlan {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  name        String
+  description String?
+  isActive    Boolean  @default(false)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  days WorkoutDay[]
+
+  @@index([userId])
+}
+
+model WorkoutDay {
+  id        String   @id @default(uuid()) @db.Uuid
+  planId    String   @db.Uuid
+  weekday   Int? // 0 = Sunday … 6 = Saturday; null = unscheduled template day
+  name      String
+  isRestDay Boolean  @default(false)
+  sortOrder Int      @default(0)
+  notes     String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  plan      WorkoutPlan          @relation(fields: [planId], references: [id], onDelete: Cascade)
+  exercises WorkoutDayExercise[]
+  sessions  WorkoutSession[]
+
+  @@index([planId, weekday])
+}
+
+model WorkoutDayExercise {
+  id                String   @id @default(uuid()) @db.Uuid
+  workoutDayId      String   @db.Uuid
+  exerciseId        String   @db.Uuid
+  sortOrder         Int      @default(0)
+  targetSets        Int?
+  targetReps        String? // e.g. "8-10"
+  targetWeightKg    Float?
+  targetDurationSec Int?
+  restSec           Int?     @default(90)
+  notes             String?
+  createdAt         DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime @updatedAt @db.Timestamptz(3)
+
+  workoutDay WorkoutDay @relation(fields: [workoutDayId], references: [id], onDelete: Cascade)
+  exercise   Exercise   @relation(fields: [exerciseId], references: [id], onDelete: Cascade)
+
+  @@index([workoutDayId])
+}
+
+model WorkoutSession {
+  id           String               @id @default(uuid()) @db.Uuid
+  userId       String               @db.Uuid
+  date         DateTime             @db.Date
+  workoutDayId String?              @db.Uuid
+  name         String
+  status       WorkoutSessionStatus @default(PLANNED)
+  startedAt    DateTime?            @db.Timestamptz(3)
+  finishedAt   DateTime?            @db.Timestamptz(3)
+  notes        String?
+  createdAt    DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime             @updatedAt @db.Timestamptz(3)
+
+  user       User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workoutDay WorkoutDay?            @relation(fields: [workoutDayId], references: [id], onDelete: SetNull)
+  entries    WorkoutExerciseEntry[]
+
+  @@index([userId, date])
+}
+
+model WorkoutExerciseEntry {
+  id           String     @id @default(uuid()) @db.Uuid
+  sessionId    String     @db.Uuid
+  exerciseId   String?    @db.Uuid
+  exerciseName String
+  sortOrder    Int        @default(0)
+  status       ItemStatus @default(PENDING)
+  restSec      Int?
+  notes        String?
+  createdAt    DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @db.Timestamptz(3)
+
+  session  WorkoutSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  exercise Exercise?      @relation(fields: [exerciseId], references: [id], onDelete: SetNull)
+  sets     WorkoutSet[]
+
+  @@index([sessionId])
+  @@index([exerciseId])
+}
+
+model WorkoutSet {
+  id          String    @id @default(uuid()) @db.Uuid
+  entryId     String    @db.Uuid
+  setNumber   Int
+  reps        Int?
+  weightKg    Float?
+  durationSec Int?
+  completed   Boolean   @default(false)
+  completedAt DateTime? @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  entry WorkoutExerciseEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  @@unique([entryId, setNumber])
+}
+
+model BodyMeasurement {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  date         DateTime @db.Date
+  measuredAt   DateTime @default(now()) @db.Timestamptz(3)
+  weightKg     Float?
+  bodyFatPct   Float?
+  waistCm      Float?
+  chestCm      Float?
+  hipsCm       Float?
+  armCm        Float?
+  thighCm      Float?
+  notes        String?
+  photoMediaId String?  @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  photoMedia MediaAsset? @relation("MeasurementPhoto", fields: [photoMediaId], references: [id], onDelete: SetNull)
+
+  @@index([userId, date])
+}
+
+// ───────────────────────────── Routine & reminders ─────────────────────────────
+
+model RoutineTemplate {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  name      String
+  dayType   DayType  @default(ANY)
+  weekdays  Int[]    @default([]) // empty = applies to every weekday of its dayType
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items RoutineItem[]
+
+  @@index([userId])
+}
+
+model RoutineItem {
+  id              String           @id @default(uuid()) @db.Uuid
+  templateId      String           @db.Uuid
+  title           String
+  category        ActivityCategory @default(CUSTOM)
+  time            String // "HH:mm"
+  sortOrder       Int              @default(0)
+  notes           String?
+  reminderEnabled Boolean          @default(true)
+  snoozeMinutes   Int              @default(10)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  template  RoutineTemplate     @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  entries   DailyRoutineEntry[]
+  reminders Reminder[]
+
+  @@index([templateId, sortOrder])
+}
+
+model DailyRoutineEntry {
+  id            String           @id @default(uuid()) @db.Uuid
+  userId        String           @db.Uuid
+  date          DateTime         @db.Date
+  routineItemId String?          @db.Uuid
+  title         String
+  category      ActivityCategory
+  scheduledTime String // "HH:mm"
+  scheduledAt   DateTime         @db.Timestamptz(3)
+  sortOrder     Int              @default(0)
+  status        RoutineStatus    @default(PENDING)
+  completedAt   DateTime?        @db.Timestamptz(3)
+  snoozedUntil  DateTime?        @db.Timestamptz(3)
+  skipReason    String?
+  notes         String?
+  createdAt     DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime         @updatedAt @db.Timestamptz(3)
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  routineItem RoutineItem? @relation(fields: [routineItemId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, date, routineItemId])
+  @@index([userId, date])
+}
+
+model Reminder {
+  id              String           @id @default(uuid()) @db.Uuid
+  userId          String           @db.Uuid
+  title           String
+  description     String?
+  category        ActivityCategory @default(CUSTOM)
+  time            String // "HH:mm" local
+  weekdays        Int[]            @default([]) // recurring weekdays; empty + oneTimeDate = one-off
+  oneTimeDate     DateTime?        @db.Date
+  dayType         DayType          @default(ANY)
+  enabled         Boolean          @default(true)
+  snoozeMinutes   Int              @default(10)
+  sound           Boolean          @default(true)
+  lastTriggeredAt DateTime?        @db.Timestamptz(3)
+  nextTriggerAt   DateTime?        @db.Timestamptz(3)
+  routineItemId   String?          @db.Uuid
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  user        User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  routineItem RoutineItem?              @relation(fields: [routineItemId], references: [id], onDelete: SetNull)
+  occurrences ReminderOccurrence[]
+  deliveries  NotificationDeliveryLog[]
+
+  @@index([enabled, nextTriggerAt])
+  @@index([userId])
+}
+
+// One scheduled firing of a reminder. The unique key prevents duplicate notifications.
+model ReminderOccurrence {
+  id           String           @id @default(uuid()) @db.Uuid
+  reminderId   String           @db.Uuid
+  userId       String           @db.Uuid
+  scheduledFor DateTime         @db.Timestamptz(3)
+  status       OccurrenceStatus @default(PENDING)
+  firedAt      DateTime?        @db.Timestamptz(3)
+  actedAt      DateTime?        @db.Timestamptz(3)
+  snoozedUntil DateTime?        @db.Timestamptz(3)
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+
+  reminder   Reminder                  @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  user       User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDeliveryLog[]
+
+  @@unique([reminderId, scheduledFor])
+  @@index([userId, scheduledFor])
+  @@index([status, snoozedUntil])
+}
+
+model PushSubscription {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @db.Uuid
+  endpoint      String    @unique
+  p256dh        String
+  auth          String
+  userAgent     String?
+  failureCount  Int       @default(0)
+  lastSuccessAt DateTime? @db.Timestamptz(3)
+  revokedAt     DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  user       User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries NotificationDeliveryLog[]
+
+  @@index([userId])
+}
+
+model NotificationDeliveryLog {
+  id             String          @id @default(uuid()) @db.Uuid
+  userId         String          @db.Uuid
+  reminderId     String?         @db.Uuid
+  occurrenceId   String?         @db.Uuid
+  subscriptionId String?         @db.Uuid
+  channel        DeliveryChannel
+  status         DeliveryStatus
+  statusCode     Int?
+  error          String?
+  createdAt      DateTime        @default(now()) @db.Timestamptz(3)
+
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reminder     Reminder?           @relation(fields: [reminderId], references: [id], onDelete: SetNull)
+  occurrence   ReminderOccurrence? @relation(fields: [occurrenceId], references: [id], onDelete: SetNull)
+  subscription PushSubscription?   @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+
+  @@unique([occurrenceId, subscriptionId, channel])
+  @@index([userId, createdAt])
+}
+
+// ───────────────────────────── Media ─────────────────────────────
+
+model MediaAsset {
+  id           String      @id @default(uuid()) @db.Uuid
+  userId       String      @db.Uuid
+  kind         MediaKind
+  bucket       String
+  objectKey    String      @unique
+  mimeType     String
+  sizeBytes    Int
+  originalName String?
+  status       MediaStatus @default(PENDING)
+  notes        String?
+  takenAt      DateTime?   @db.Timestamptz(3)
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
+  deletedAt    DateTime?   @db.Timestamptz(3)
+
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  foods        FoodItem[]        @relation("FoodImage")
+  exercises    Exercise[]        @relation("ExerciseImage")
+  measurements BodyMeasurement[] @relation("MeasurementPhoto")
+
+  @@index([userId, kind, createdAt])
+  @@index([status, createdAt])
+}
