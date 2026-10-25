@@ -104,14 +104,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        run: echo "image=${IMAGE_NAME,,}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+        # Image names must be lowercase (the repo name has capitals).
+        run: |
+          echo "image=${IMAGE_NAME,,}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "latest=${IMAGE_NAME,,}:latest" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
             ${{ steps.meta.outputs.image }}
-            ${{ env.IMAGE_NAME }}:latest
+            ${{ steps.meta.outputs.latest }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
